@@ -1,0 +1,40 @@
+{
+  "contentrating": "Everyone",
+  "description": "木之本樱 & 可鲁贝洛斯 4K (16:10) 交互式动态壁纸（带樱花飘落、库洛魔法星尘闪烁、点击互动与 2.5D 视差）",
+  "file": "index.html",
+  "general": {
+    "properties": {
+      "schemecolor": {
+        "order": 0,
+        "text": "ui_browse_properties_scheme_color",
+        "type": "color",
+        "value": "0.98 0.72 0.78"
+      },
+      "petalcount": {
+        "text": "飘落花瓣数量",
+        "type": "slider",
+        "value": 75,
+        "min": 15,
+        "max": 180
+      },
+      "windspeed": {
+        "text": "微风风力",
+        "type": "slider",
+        "value": 10,
+        "min": 2,
+        "max": 30
+      },
+      "sparkleintensity": {
+        "text": "魔法星尘光效",
+        "type": "slider",
+        "value": 12,
+        "min": 0,
+        "max": 25
+      }
+    }
+  },
+  "preview": "bg.png",
+  "title": "木之本樱 - 4K 樱花飞舞 (Cardcaptor Sakura Interactive)",
+  "type": "web",
+  "visibility": "public"
+}

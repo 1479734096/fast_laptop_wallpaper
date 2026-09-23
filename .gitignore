@@ -1,0 +1,22 @@
+# Python 运行时与缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 自动生成的输出目录（避免生成的 4K 大图占满 Gitee 500MB 配额）
+output/*
+!output/.gitkeep
+
+# 待处理图片目录（避免将您个人的待处理私有大图传上去，仅保留说明文本）
+input/*
+!input/.gitkeep
+!input/把待处理图片放在这个文件夹里.txt
+
+# 系统缓存文件
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 注意：当前整个 tools/ (含超分模型和 exe) 约 60MB，Gitee 免费仓库限制为 500MB，可以正常上传；
+# 如果后续不需要将 60MB 的模型与工具传到云端，可以取消下行的注释：
+# tools/

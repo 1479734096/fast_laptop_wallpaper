@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>木之本樱 & 小可 - 4K 交互式动态壁纸</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      user-select: none;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #121018;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    #canvas-container {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+    /* Controls UI */
+    .ui-toggle-btn {
+      position: fixed;
+      top: 24px;
+      right: 24px;
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.22);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      z-index: 100;
+      transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+    }
+    .ui-toggle-btn:hover {
+      background: rgba(255, 255, 255, 0.38);
+      transform: scale(1.1) rotate(30deg);
+    }
+    .control-panel {
+      position: fixed;
+      top: 80px;
+      right: 24px;
+      width: 290px;
+      background: rgba(26, 20, 32, 0.82);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border: 1px solid rgba(255, 183, 197, 0.3);
+      border-radius: 18px;
+      padding: 20px 22px;
+      color: #fff;
+      z-index: 99;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(-12px) scale(0.95);
+      transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: 0 12px 36px rgba(0,0,0,0.45);
+    }
+    .control-panel.active {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(0) scale(1);
+    }
+    .control-panel h3 {
+      font-size: 15px;
+      margin-bottom: 14px;
+      color: #ffd6e0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+    }
+    .control-group {
+      margin-bottom: 13px;
+    }
+    .control-group label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: #eae0e8;
+      margin-bottom: 6px;
+    }
+    .control-group input[type=range] {
+      width: 100%;
+      height: 4px;
+      background: rgba(255,255,255,0.22);
+      border-radius: 2px;
+      appearance: none;
+      outline: none;
+    }
+    .control-group input[type=range]::-webkit-slider-thumb {
+      appearance: none;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background: #ff85a1;
+      cursor: pointer;
+      box-shadow: 0 0 8px rgba(255,133,161,0.9);
+    }
+    .btn-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 18px;
+    }
+    .btn {
+      flex: 1;
+      padding: 9px 10px;
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.25);
+      background: rgba(255,255,255,0.12);
+      color: #fff;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn:hover {
+      background: rgba(255,255,255,0.22);
+    }
+    .btn:active {
+      transform: scale(0.96);
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #ff758c 0%, #ff7eb3 100%);
+      border: none;
+      font-weight: 600;
+    }
+    .btn-primary:hover {
+      opacity: 0.92;
+      box-shadow: 0 0 12px rgba(255,117,140,0.5);
+    }
+    /* Hint badge */
+    .hint-bar {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(18, 14, 24, 0.6);
+      backdrop-filter: blur(10px);
+      padding: 7px 18px;
+      border-radius: 22px;
+      font-size: 12px;
+      color: rgba(255,255,255,0.85);
+      pointer-events: none;
+      transition: opacity 1s;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+      border: 1px solid rgba(255,255,255,0.12);
+    }
+  </style>
+</head>
+<body>
+  <div id="canvas-container">
+    <canvas id="wallpaper-canvas"></canvas>
+  </div>
+
+  <div class="ui-toggle-btn" id="toggle-ui-btn" title="控制台">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"></circle>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+    </svg>
+  </div>
+
+  <div class="control-panel" id="control-panel">
+    <h3>
+      <span>🌸</span> 木之本樱 4K 壁纸控制台
+    </h3>
+    <div class="control-group">
+      <label>飘落花瓣数量 <span id="val-petal-count">75</span></label>
+      <input type="range" id="param-petal-count" min="15" max="180" value="75">
+    </div>
+    <div class="control-group">
+      <label>微风风力 <span id="val-wind-speed">1.0x</span></label>
+      <input type="range" id="param-wind-speed" min="2" max="30" value="10">
+    </div>
+    <div class="control-group">
+      <label>魔法星尘光效 <span id="val-sparkle-intensity">1.0x</span></label>
+      <input type="range" id="param-sparkle-intensity" min="0" max="25" value="12">
+    </div>
+    <div class="control-group">
+      <label>镜头呼吸浮动 <span id="val-camera-zoom">1.0x</span></label>
+      <input type="range" id="param-camera-zoom" min="0" max="25" value="10">
+    </div>
+    <div class="control-group">
+      <label>2.5D 视差灵敏度 <span id="val-parallax-sens">1.0x</span></label>
+      <input type="range" id="param-parallax-sens" min="0" max="30" value="12">
+    </div>
+    <div class="btn-row">
+      <button class="btn" id="btn-fullscreen">切换全屏</button>
+      <button class="btn btn-primary" id="btn-record">录制 6s 循环</button>
+    </div>
+  </div>
+
+  <div class="hint-bar" id="hint-bar">
+    ✨ 点击屏幕散落樱花魔法 | 移动鼠标体验 2.5D 空间视差
+  </div>
+
+  <script src="wallpaper.js"></script>
+</body>
+</html>
