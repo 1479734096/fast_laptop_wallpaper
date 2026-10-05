@@ -1,12 +1,12 @@
 // ========================================================
-// 木之本樱 & 小可 - 4K 2.5D 交互式动态壁纸核心引擎
+// 2.5D 交互式动态壁纸核心引擎
 // 特性: 
-// - 原生 16:10 4K (3840x2400) 超清渲染底图
+// - 读取工程内的底图，按窗口比例居中铺满
 // - 3D 翻转樱花花瓣粒子系统 (多层景深)
 // - 环境配色星尘闪烁系统 (四角星芒 + 柔光浮尘)
 // - 鼠标/触摸点击交互: 激发生动旋转的花瓣与魔法星光
 // - 2.5D 镜头呼吸与空间视差
-// - Wallpaper Engine 属性监听与一键 60fps 录制
+// - Wallpaper Engine 属性监听与六秒片段录制（目标 60fps）
 // ========================================================
 
 const canvas = document.getElementById('wallpaper-canvas');
@@ -43,8 +43,12 @@ function readAutomaticEffectTheme() {
   }
 }
 
+function effectColorToRgb(color) {
+  return [1, 3, 5].map(offset => parseInt(color.slice(offset, offset + 2), 16));
+}
+
 function createEffectPalette(primaryColor) {
-  const channels = [1, 3, 5].map(offset => parseInt(primaryColor.slice(offset, offset + 2), 16));
+  const channels = effectColorToRgb(primaryColor);
   const tint = amount => channels.map(channel => Math.round(channel + (255 - channel) * amount)).join(', ');
   return { base: tint(0), soft: tint(0.3), light: tint(0.65), highlight: tint(0.9) };
 }
@@ -62,7 +66,7 @@ let screenWidth = window.innerWidth;
 let screenHeight = window.innerHeight;
 let dpr = window.devicePixelRatio || 1;
 
-// 4K 底图载入
+// 工程底图载入
 const bgImage = new Image();
 bgImage.src = 'bg.png';
 let bgLoaded = false;
@@ -219,7 +223,7 @@ class SakuraPetal {
 }
 
 // --------------------------------------------------------
-// 2. 库洛魔法星尘闪烁系统 (Magic Stardust & Sparkles)
+// 2. 星尘闪烁系统
 // --------------------------------------------------------
 class MagicSparkle {
   constructor(x = null, y = null, isBurst = false) {
@@ -341,7 +345,7 @@ for (let i = 0; i < 28; i++) {
   sparkles.push(new MagicSparkle());
 }
 
-// 点击互动: 激发魔法樱花爆炸
+// 点击互动：散落花瓣与星尘
 window.addEventListener('click', (e) => {
   // 如果点击的是控制面板或按钮，不触发
   if (e.target.closest('#control-panel') || e.target.closest('#toggle-ui-btn')) return;
@@ -358,7 +362,7 @@ window.addEventListener('click', (e) => {
 });
 
 // --------------------------------------------------------
-// 3. 渲染主循环 (60FPS Render Loop)
+// 3. 动画渲染主循环
 // --------------------------------------------------------
 let startTime = performance.now();
 
@@ -383,8 +387,8 @@ function render(currentTime) {
     const breathZoom = 1 + Math.sin(elapsed * 0.7) * 0.015 * config.cameraZoom;
     const breathY = Math.cos(elapsed * 0.5) * 6 * config.cameraZoom;
 
-    // 16:10 适配居中铺满
-    const imgAspect = bgImage.naturalWidth / bgImage.naturalHeight; // 3840/2400 = 1.6
+    // 按实际底图比例居中铺满
+    const imgAspect = bgImage.naturalWidth / bgImage.naturalHeight;
     const screenAspect = screenWidth / screenHeight;
     let renderW, renderH;
 
@@ -402,7 +406,7 @@ function render(currentTime) {
     const drawX = (screenWidth - renderW) / 2 + parallaxX * 0.4;
     const drawY = (screenHeight - renderH) / 2 + parallaxY * 0.4 + breathY;
 
-    // 绘制 4K 底图
+    // 绘制工程底图
     ctx.drawImage(bgImage, drawX, drawY, renderW, renderH);
 
     // 深色背景降低柔光叠加，保留原有星尘强度控制。
@@ -468,6 +472,8 @@ const controlPanel = document.getElementById('control-panel');
 const hintBar = document.getElementById('hint-bar');
 
 const effectColorInput = document.getElementById('param-effect-color');
+const effectRgbInputs = ['r', 'g', 'b'].map(channel => document.getElementById('param-effect-' + channel));
+const effectColorError = document.getElementById('effect-color-error');
 const resetEffectColorBtn = document.getElementById('btn-reset-effect-color');
 const effectThemeStatus = document.getElementById('effect-theme-status');
 const effectStorageKey = 'wallpaper:effect-color:v1:' + window.location.pathname;
@@ -488,10 +494,18 @@ try {
   console.warn('无法读取特效颜色记录，手动选择仅本次生效。', error);
 }
 
-function updateEffectColorControls() {
+function updateEffectColorControls(sourceInput = null) {
   const color = manualEffectColor || automaticEffectTheme.primaryColor;
   effectPalette = createEffectPalette(color);
-  effectColorInput.value = color;
+  // 输入事件中保留来源控件的草稿与光标，完成编辑后才规范数值显示。
+  if (effectColorInput !== sourceInput && effectColorInput.value !== color) {
+    effectColorInput.value = color;
+  }
+  const channels = effectColorToRgb(color);
+  effectRgbInputs.forEach((input, index) => {
+    const value = String(channels[index]);
+    if (input !== sourceInput && input.value !== value) input.value = value;
+  });
   resetEffectColorBtn.disabled = manualEffectColor === null;
   effectThemeStatus.textContent = (manualEffectColor ? '手动配色' : '自动配色')
     + (effectStorageAvailable ? '' : ' · 仅本次生效');
@@ -511,33 +525,99 @@ function persistEffectColor() {
   }
 }
 
-effectColorInput.addEventListener('input', () => {
+function clearEffectColorError() {
+  effectColorError.textContent = '';
+  effectRgbInputs.forEach(input => input.removeAttribute('aria-invalid'));
+}
+
+function applyManualEffectColor(color, sourceInput) {
+  const normalizedColor = color.toLowerCase();
+  if (manualEffectColor !== normalizedColor) {
+    manualEffectColor = normalizedColor;
+    persistEffectColor();
+  }
+  clearEffectColorError();
+  updateEffectColorControls(sourceInput);
+}
+
+function handleEffectColorInput() {
   if (!isEffectColor(effectColorInput.value)) return;
-  manualEffectColor = effectColorInput.value.toLowerCase();
-  persistEffectColor();
-  updateEffectColorControls();
+  applyManualEffectColor(effectColorInput.value, effectColorInput);
+}
+
+effectColorInput.addEventListener('input', handleEffectColorInput);
+effectColorInput.addEventListener('change', handleEffectColorInput);
+
+function readEffectRgbValue(input) {
+  if (!/^\d+$/.test(input.value)) return null;
+  const value = Number(input.value);
+  return Number.isInteger(value) && value >= 0 && value <= 255 ? value : null;
+}
+
+function finishEffectRgbEdit(input, index) {
+  const value = readEffectRgbValue(input);
+  if (value === null) {
+    const previous = effectColorToRgb(manualEffectColor || automaticEffectTheme.primaryColor)[index];
+    input.value = String(previous);
+    effectColorError.textContent = ['R', 'G', 'B'][index] + ' 仅支持 0–255 整数，已恢复为 ' + previous + '。';
+  } else {
+    input.value = String(value);
+  }
+  input.removeAttribute('aria-invalid');
+}
+
+effectRgbInputs.forEach((input, index) => {
+  input.addEventListener('input', () => {
+    effectColorError.textContent = '';
+    const value = readEffectRgbValue(input);
+    if (value === null) {
+      input.setAttribute('aria-invalid', 'true');
+      return;
+    }
+    const channels = effectColorToRgb(manualEffectColor || automaticEffectTheme.primaryColor);
+    channels[index] = value;
+    const color = '#' + channels.map(channel => channel.toString(16).padStart(2, '0')).join('');
+    applyManualEffectColor(color, input);
+  });
+  input.addEventListener('blur', () => finishEffectRgbEdit(input, index));
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.isComposing) finishEffectRgbEdit(input, index);
+  });
 });
 
 resetEffectColorBtn.addEventListener('click', () => {
   manualEffectColor = null;
   persistEffectColor();
+  clearEffectColorError();
   updateEffectColorControls();
 });
 
 updateEffectColorControls();
 
 uiToggleBtn.addEventListener('click', () => {
+  if (controlPanel.classList.contains('active') && effectRgbInputs.includes(document.activeElement)) {
+    document.activeElement.blur();
+  }
   controlPanel.classList.toggle('active');
   if (hintBar) hintBar.style.opacity = '0';
 });
 
+const sliderDisplayUpdates = [];
+
 function bindSlider(id, valId, key, multiplier = 1, suffix = '') {
   const input = document.getElementById(id);
   const valLabel = document.getElementById(valId);
+  const updateDisplay = () => {
+    const val = config[key];
+    input.value = Math.round(val / multiplier);
+    valLabel.textContent = (multiplier === 0.1 ? val.toFixed(1) : val) + suffix;
+  };
+  sliderDisplayUpdates.push(updateDisplay);
+  updateDisplay();
   input.addEventListener('input', (e) => {
     const val = parseFloat(e.target.value) * multiplier;
     config[key] = val;
-    valLabel.textContent = (multiplier === 0.1 ? val.toFixed(1) : val) + suffix;
+    updateDisplay();
     if (key === 'petalCount') {
       initPetals();
     }
@@ -558,7 +638,7 @@ document.getElementById('btn-fullscreen').addEventListener('click', () => {
   }
 });
 
-// 浏览器 6s 循环录制
+// 六秒片段录制，不保证首尾无缝衔接。
 const btnRecord = document.getElementById('btn-record');
 btnRecord.addEventListener('click', () => {
   if (btnRecord.disabled) return;
@@ -580,11 +660,12 @@ btnRecord.addEventListener('click', () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'sakura_wallpaper_web_record.webm';
+    const recordingName = document.documentElement.dataset.projectName || '动态壁纸';
+    a.download = recordingName.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_') + '_6s.webm';
     a.click();
     URL.revokeObjectURL(url);
     btnRecord.disabled = false;
-    btnRecord.textContent = '录制 6s 循环';
+    btnRecord.textContent = '录制 6s 片段';
   };
 
   recorder.start();
@@ -612,5 +693,7 @@ window.wallpaperPropertyListener = {
     if (properties.sparkleintensity) {
       config.sparkleIntensity = properties.sparkleintensity.value / 10;
     }
+    // 宿主修改参数后同步网页控件，避免实际值与面板显示分离。
+    sliderDisplayUpdates.forEach(updateDisplay => updateDisplay());
   }
 };

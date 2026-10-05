@@ -2,19 +2,20 @@
 # -*- coding: utf-8 -*-
 """
 =======================================================================
-笔记本 16:10 4K 动态壁纸一键自动化生成流水线 (Laptop Wallpaper Pipeline)
+动态壁纸一键生成流水线（默认 16:10 4K）
 =======================================================================
 功能:
-1. 智能画幅裁切: 针对 16:10 严格居中裁切，杜绝拉伸挤压变形
-2. GPU 神经超分: 调用本地 Real-ESRGAN (animevideov3 + TTA 8重采样)，彻底消灭毛边与人造黑边
-3. 4K 极清降采样: 7680x4800 超采样缓冲 -> 3840x2400 (真 16:10 4K)
-4. 动态壁纸自动打包: 自动生成包含优雅慢速落樱、库洛魔法星尘与 2.5D 视差的独立工程包
+1. 根据目标宽高比居中裁切底图
+2. 调用内置 Real-ESRGAN Vulkan 超分工具，默认启用 TTA
+3. 使用 Lanczos 缩放至目标尺寸，默认 3840×2400
+4. 从最终底图生成环境配色，并写出名称、分辨率和说明一致的独立网页工程
 """
 
 import os
 import sys
 import argparse
 import colorsys
+import html
 import json
 import re
 import subprocess
@@ -43,6 +44,58 @@ EFFECT_THEME_PATTERN = re.compile(
     r'(<script id="effect-theme" type="application/json">)(.*?)(</script>)',
     re.DOTALL,
 )
+PROJECT_INFO_PATTERN = re.compile(
+    r'(<!-- 壁纸工程信息：开始 -->)(.*?)(<!-- 壁纸工程信息：结束 -->)',
+    re.DOTALL,
+)
+PROJECT_FILES = ("index.html", "wallpaper.js", "project.json", "README.md")
+
+def project_title(project_name, width, height):
+    return f"{project_name} - {width}×{height} 交互式动态壁纸"
+
+def replace_project_html(content, project_name, width, height):
+    """按 HTML 上下文转义名称，保留自动配色块及其余网页内容。"""
+    replacements = (
+        (r'(\bdata-project-name=")[^"]*(")', html.escape(project_name, quote=True)),
+        (r'(<title>).*?(</title>)', html.escape(project_title(project_name, width, height))),
+        (r'(<span id="wallpaper-project-name">).*?(</span>)', html.escape(project_name)),
+    )
+    for pattern, value in replacements:
+        content, count = re.subn(
+            pattern, lambda match: match.group(1) + value + match.group(2), content, flags=re.DOTALL,
+        )
+        if count != 1:
+            raise ValueError("网页工程信息标记缺失或重复，请升级模板。")
+    return content
+
+def replace_project_readme(content, project_name, width, height):
+    """只替换工程信息段，公共使用说明保持可直接导入和迁移。"""
+    if len(list(PROJECT_INFO_PATTERN.finditer(content))) != 1:
+        raise ValueError("README.md 必须包含唯一的壁纸工程信息段，请升级模板。")
+    newline = "\r\n" if "\r\n" in content else "\n"
+    escaped_name = re.sub(r'([\\`*_{}\[\]()#+.!|<>])', r'\\\1', project_name)
+    details = (
+        f"# {escaped_name} - {width}×{height} 交互式动态壁纸" + newline + newline
+        + f"本目录为独立网页壁纸工程，使用本目录内的 [bg.png](bg.png)，背景分辨率为 {width} × {height}。"
+    )
+    return PROJECT_INFO_PATTERN.sub(
+        lambda match: match.group(1) + newline + details + newline + match.group(3), content, count=1,
+    )
+
+def render_project_file(filename, content, project_name, width, height):
+    if filename == "index.html":
+        return replace_project_html(content, project_name, width, height)
+    if filename == "project.json":
+        project = json.loads(content)
+        project["title"] = project_title(project_name, width, height)
+        project["description"] = (
+            f"{project_name}（{width}×{height}）交互式动态壁纸：环境自动配色、慢速花瓣、星尘、"
+            "点击互动、2.5D 视差及网页面板 RGB 输入与手动选色。"
+        )
+        return json.dumps(project, ensure_ascii=False, indent=2) + "\n"
+    if filename == "README.md":
+        return replace_project_readme(content, project_name, width, height)
+    return content
 
 def extract_effect_theme(img_pil):
     """优先参考外圈环境色；颜色统计不等同于人物与背景分割。"""
@@ -110,12 +163,12 @@ def refresh_effect_theme(project_dir):
 
 def fit_to_aspect_ratio(img_pil, target_aspect=1.6):
     """
-    智能几何居中裁切，确保输出严格符合目标长宽比 (默认 16:10 = 1.6)，杜绝非等比拉伸
+    按目标比例居中裁切，默认 16:10；比例差小于 0.01 时跳过预裁切。
     """
     w, h = img_pil.size
     current_aspect = w / float(h)
     
-    # 允许 1% 极小误差直接跳过
+    # 比例差小于 0.01 时跳过预裁切，随后按目标尺寸缩放。
     if abs(current_aspect - target_aspect) < 0.01:
         return img_pil
 
@@ -123,37 +176,44 @@ def fit_to_aspect_ratio(img_pil, target_aspect=1.6):
         # 过宽 (如 16:9 = 1.778)，从左右两侧居中裁切多余区域
         new_w = int(h * target_aspect)
         offset_x = (w - new_w) // 2
-        print(f"  [Aspect Adjust] Cropping width from {w} to {new_w} (offset: {offset_x}) for exact 16:10...")
+        print(f"  [画幅调整] 宽度 {w} → {new_w}，偏移 {offset_x}，目标比例 {target_aspect:.4f}")
         return img_pil.crop((offset_x, 0, offset_x + new_w, h))
     else:
         # 过高 (如 4:3 = 1.333)，从上下两侧居中裁切多余区域
         new_h = int(w / target_aspect)
         offset_y = (h - new_h) // 2
-        print(f"  [Aspect Adjust] Cropping height from {h} to {new_h} (offset: {offset_y}) for exact 16:10...")
+        print(f"  [画幅调整] 高度 {h} → {new_h}，偏移 {offset_y}，目标比例 {target_aspect:.4f}")
         return img_pil.crop((0, offset_y, w, offset_y + new_h))
 
-def process_single_image(image_path, target_w=DEFAULT_TARGET_W, target_h=DEFAULT_TARGET_H, model_name="realesr-animevideov3", use_tta=True, style="natural", open_preview=True):
+def process_single_image(image_path, target_w=DEFAULT_TARGET_W, target_h=DEFAULT_TARGET_H, model_name="realesr-animevideov3", use_tta=True, style="natural", open_preview=True, output_dir=OUTPUT_DIR):
+    if style != "natural":
+        raise ValueError("film 风格尚未实现，目前仅支持 natural；底图未处理。")
+    if target_w <= 0 or target_h <= 0:
+        raise ValueError("目标宽度和高度必须为正整数。")
+    for filename in PROJECT_FILES:
+        if not os.path.isfile(os.path.join(TEMPLATE_DIR, filename)):
+            raise FileNotFoundError(f"缺少必要的工程模板：{filename}")
     base_name = os.path.splitext(os.path.basename(image_path))[0]
-    out_project_dir = os.path.join(OUTPUT_DIR, f"{base_name}_4k_wallpaper")
+    out_project_dir = os.path.join(output_dir, f"{base_name}_4k_wallpaper")
     os.makedirs(out_project_dir, exist_ok=True)
     
     print("\n" + "="*65)
-    print(f"Processing: {os.path.basename(image_path)}")
-    print(f"Target: {target_w} x {target_h} (16:10 4K) | Model: {model_name} | Style: {style}")
+    print(f"正在处理：{os.path.basename(image_path)}")
+    print(f"目标：{target_w} × {target_h} | 模型：{model_name} | 风格：{style}")
     print("="*65)
 
-    # 1. 载入并智能修正画幅
+    # 1. 载入图片并按目标比例裁切
     raw_img = Image.open(image_path).convert("RGBA")
     w_raw, h_raw = raw_img.size
     
-    # 消除可能存在的边缘透明噪点
+    # 将透明区域合成到白色背景。
     bg_clean = Image.new("RGB", (w_raw, h_raw), (255, 255, 255))
     bg_clean.paste(raw_img, mask=raw_img.split()[3])
     
     target_aspect = target_w / float(target_h)
     fitted_img = fit_to_aspect_ratio(bg_clean, target_aspect=target_aspect)
 
-    # 2. 超分输入预处理: 若原本就是被低级双线性虚胖放大的图像，先平滑收拢到基准尺寸
+    # 2. 按宽度阈值缩小超分输入；该规则不判断图像质量。
     temp_in = os.path.join(TOOLS_DIR, f"temp_{base_name}_in.png")
     temp_out = os.path.join(TOOLS_DIR, f"temp_{base_name}_out.png")
 
@@ -165,7 +225,7 @@ def process_single_image(image_path, target_w=DEFAULT_TARGET_W, target_h=DEFAULT
     base_prep.save(temp_in)
 
     # 3. 运行 GPU 神经网络超分 (Real-ESRGAN Vulkan)
-    print(f"  [GPU Inference] Running Real-ESRGAN Anime 4x (TTA={use_tta})...")
+    print(f"  [GPU 超分] Real-ESRGAN 4x，模型 {model_name}，TTA={use_tta}")
     cmd = [
         REAL_ESRGAN_EXE,
         "-i", temp_in,
@@ -178,8 +238,8 @@ def process_single_image(image_path, target_w=DEFAULT_TARGET_W, target_h=DEFAULT
 
     subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
 
-    # 4. 高阶抗锯齿降采样至目标 4K
-    print(f"  [Downsampling] Lanczos4 anti-aliasing to {target_w} x {target_h}...")
+    # 4. 将超分结果缩放至目标尺寸
+    print(f"  [尺寸调整] Lanczos 缩放至 {target_w} × {target_h}")
     sr_img = Image.open(temp_out)
     final_4k = sr_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
@@ -190,26 +250,26 @@ def process_single_image(image_path, target_w=DEFAULT_TARGET_W, target_h=DEFAULT
     # 5. 保存底图到壁纸工程目录
     dst_bg_path = os.path.join(out_project_dir, "bg.png")
     final_4k.save(dst_bg_path, compress_level=3)
-    print(f"  [Output] 4K background saved: {dst_bg_path}")
+    print(f"  [输出] 底图已保存：{dst_bg_path}")
 
     # 6. 自动组装交互式 Web 动态壁纸工程包
-    print(f"  [Packaging] Assembling interactive Web Wallpaper bundle...")
+    print("  [工程组装] 写入网页、脚本、配置及说明...")
     effect_theme = extract_effect_theme(final_4k)
-    for f in ["index.html", "wallpaper.js", "project.json", "README.md"]:
+    project_contents = {}
+    for f in PROJECT_FILES:
         src_template_file = os.path.join(TEMPLATE_DIR, f)
-        dst_file = os.path.join(out_project_dir, f)
-        if os.path.exists(src_template_file):
-            with open(src_template_file, "r", encoding="utf-8") as rf:
-                content = rf.read()
-            # 替换工程标题
-            content = content.replace("木之本樱 & 小可 - 4K 交互式动态壁纸", f"{base_name} - 4K 交互式动态壁纸")
-            content = content.replace("木之本樱 - 4K 樱花飞舞 (Cardcaptor Sakura Interactive)", f"{base_name} 4K Wallpaper")
-            if f == "index.html":
-                content = replace_effect_theme(content, effect_theme)
-            with open(dst_file, "w", encoding="utf-8") as wf:
-                wf.write(content)
+        with open(src_template_file, "r", encoding="utf-8") as rf:
+            content = rf.read()
+        content = render_project_file(f, content, base_name, target_w, target_h)
+        if f == "index.html":
+            content = replace_effect_theme(content, effect_theme)
+        project_contents[f] = content
+    # 全部模板解析成功后再写入，避免缺失模板被跳过却宣称完整组装成功。
+    for f, content in project_contents.items():
+        with open(os.path.join(out_project_dir, f), "w", encoding="utf-8") as wf:
+            wf.write(content)
 
-    print(f"\n>>> 恭喜！动态壁纸工程已打包完成: {out_project_dir}")
+    print(f"\n>>> 动态壁纸工程已生成：{out_project_dir}")
     preview_html = os.path.join(out_project_dir, "index.html")
 
     if open_preview:
@@ -219,17 +279,22 @@ def process_single_image(image_path, target_w=DEFAULT_TARGET_W, target_h=DEFAULT
     return out_project_dir
 
 def main():
-    parser = argparse.ArgumentParser(description="笔记本 16:10 4K 动态壁纸全流程一键生成流水线")
+    parser = argparse.ArgumentParser(description="动态壁纸生成流水线，默认 3840×2400（16:10 4K）")
     parser.add_argument("--input", "-i", type=str, default=INPUT_DIR, help="输入图片路径或文件夹 (默认 input 目录)")
     parser.add_argument("--output", "-o", type=str, default=OUTPUT_DIR, help="输出目录")
     parser.add_argument("--width", "-W", type=int, default=DEFAULT_TARGET_W, help="目标宽度 (默认 3840)")
     parser.add_argument("--height", "-H", type=int, default=DEFAULT_TARGET_H, help="目标高度 (默认 2400)")
     parser.add_argument("--model", "-m", type=str, default="realesr-animevideov3", choices=["realesr-animevideov3", "realesrgan-x4plus-anime", "realesrgan-x4plus"], help="超分模型名称")
-    parser.add_argument("--no-tta", action="store_true", help="禁用 TTA 模式 (可略微加快速度，但建议保留以获得最佳线条抗锯齿)")
-    parser.add_argument("--style", "-s", type=str, default="natural", choices=["natural", "film"], help="画风风格")
+    parser.add_argument("--no-tta", action="store_true", help="关闭默认启用的 TTA 模式")
+    parser.add_argument("--style", "-s", type=str, default="natural", choices=["natural", "film"], help="目前仅支持 natural；film 为兼容旧命令保留，使用时明确报错")
     parser.add_argument("--no-browser", action="store_true", help="处理完成后不自动打开浏览器预览")
     parser.add_argument("--refresh-theme", type=str, metavar="工程目录", help="仅从工程内已有 bg.png 刷新 HTML 配色，不运行超分或预览")
     args = parser.parse_args()
+
+    if args.style != "natural":
+        parser.error("film 风格尚未实现，目前仅支持 natural；未生成或修改底图。")
+    if args.width <= 0 or args.height <= 0:
+        parser.error("目标宽度和高度必须为正整数。")
 
     if args.refresh_theme is not None:
         try:
@@ -263,7 +328,8 @@ def main():
             model_name=args.model,
             use_tta=not args.no_tta,
             style=args.style,
-            open_preview=not args.no_browser and (idx == 0) # 仅预览首张
+            open_preview=not args.no_browser and (idx == 0), # 仅预览首张
+            output_dir=args.output,
         )
 
 if __name__ == "__main__":
