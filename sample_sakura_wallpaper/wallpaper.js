@@ -3,7 +3,7 @@
 // 特性: 
 // - 原生 16:10 4K (3840x2400) 超清渲染底图
 // - 3D 翻转樱花花瓣粒子系统 (多层景深)
-// - 库洛魔法星尘闪烁系统 (金色/粉色四角星芒 + 柔光浮尘)
+// - 环境配色星尘闪烁系统 (四角星芒 + 柔光浮尘)
 // - 鼠标/触摸点击交互: 激发生动旋转的花瓣与魔法星光
 // - 2.5D 镜头呼吸与空间视差
 // - Wallpaper Engine 属性监听与一键 60fps 录制
@@ -20,6 +20,42 @@ const config = {
   parallaxSens: 1.2,
   timeScale: 1.0
 };
+
+const defaultEffectTheme = { primaryColor: '#b8d9f2', brightness: 0 };
+
+function isEffectColor(value) {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value);
+}
+
+function readAutomaticEffectTheme() {
+  try {
+    const themeNode = document.getElementById('effect-theme');
+    if (!themeNode) throw new Error('缺少自动配色数据块');
+    const theme = JSON.parse(themeNode.textContent);
+    if (!theme || !isEffectColor(theme.primaryColor) || !Number.isFinite(theme.brightness)
+        || theme.brightness < 0 || theme.brightness > 1) {
+      throw new Error('自动配色数据格式无效');
+    }
+    return theme;
+  } catch (error) {
+    console.warn('无法读取自动配色，使用淡蓝色与克制柔光。', error);
+    return defaultEffectTheme;
+  }
+}
+
+function createEffectPalette(primaryColor) {
+  const channels = [1, 3, 5].map(offset => parseInt(primaryColor.slice(offset, offset + 2), 16));
+  const tint = amount => channels.map(channel => Math.round(channel + (255 - channel) * amount)).join(', ');
+  return { base: tint(0), soft: tint(0.3), light: tint(0.65), highlight: tint(0.9) };
+}
+
+function effectRgba(color, alpha) {
+  return `rgba(${color}, ${alpha})`;
+}
+
+const automaticEffectTheme = readAutomaticEffectTheme();
+const ambientGlowScale = 0.35 + 0.65 * automaticEffectTheme.brightness;
+let effectPalette = createEffectPalette(automaticEffectTheme.primaryColor);
 
 let mouse = { x: 0.5, y: 0.5, targetX: 0.5, targetY: 0.5 };
 let screenWidth = window.innerWidth;
@@ -165,16 +201,16 @@ class SakuraPetal {
       ctx.filter = `blur(${this.blur}px)`;
     }
 
-    // 绘制粉嫩樱花花瓣 (经典心形微缺口)
+    // 保留花瓣轮廓，绘制时读取共享色板以立即响应选色。
     ctx.beginPath();
     ctx.moveTo(0, -this.size);
     ctx.bezierCurveTo(this.size * 0.65, -this.size * 0.8, this.size * 0.85, this.size * 0.35, 0, this.size);
     ctx.bezierCurveTo(-this.size * 0.85, this.size * 0.35, -this.size * 0.65, -this.size * 0.8, 0, -this.size);
 
     const grad = ctx.createLinearGradient(0, -this.size, 0, this.size);
-    grad.addColorStop(0, `rgba(255, 185, 205, ${this.opacity})`);
-    grad.addColorStop(0.55, `rgba(255, 225, 235, ${this.opacity * 0.96})`);
-    grad.addColorStop(1, `rgba(255, 150, 180, ${this.opacity * 0.85})`);
+    grad.addColorStop(0, effectRgba(effectPalette.soft, this.opacity));
+    grad.addColorStop(0.55, effectRgba(effectPalette.light, this.opacity * 0.96));
+    grad.addColorStop(1, effectRgba(effectPalette.base, this.opacity * 0.85));
 
     ctx.fillStyle = grad;
     ctx.fill();
@@ -214,8 +250,7 @@ class MagicSparkle {
     this.pulseSpeed = Math.random() * 0.04 + 0.02;
     this.rot = Math.random() * Math.PI * 2;
     this.rotSpeed = (Math.random() - 0.5) * 0.03;
-    // 金黄 (库洛牌魔力) 或 粉红 (小樱魔力)
-    this.colorType = Math.random() < 0.6 ? 'gold' : 'pink';
+    this.lightVariant = Math.random() < 0.6;
   }
 
   update() {
@@ -248,6 +283,7 @@ class MagicSparkle {
 
     ctx.translate(drawX, drawY);
     ctx.rotate(this.rot);
+    const sparkleColor = this.lightVariant ? effectPalette.soft : effectPalette.base;
 
     if (this.isStar) {
       // 绘制精致四角魔法星芒
@@ -264,29 +300,17 @@ class MagicSparkle {
       ctx.closePath();
 
       const starGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, rOuter);
-      if (this.colorType === 'gold') {
-        starGrad.addColorStop(0, `rgba(255, 250, 220, ${alpha * 2.0})`);
-        starGrad.addColorStop(0.5, `rgba(255, 215, 120, ${alpha * 1.2})`);
-        starGrad.addColorStop(1, 'rgba(255, 200, 80, 0)');
-      } else {
-        starGrad.addColorStop(0, `rgba(255, 245, 250, ${alpha * 2.0})`);
-        starGrad.addColorStop(0.5, `rgba(255, 180, 210, ${alpha * 1.2})`);
-        starGrad.addColorStop(1, 'rgba(255, 150, 190, 0)');
-      }
+      starGrad.addColorStop(0, effectRgba(effectPalette.highlight, alpha * 2.0));
+      starGrad.addColorStop(0.5, effectRgba(sparkleColor, alpha * 1.2));
+      starGrad.addColorStop(1, effectRgba(sparkleColor, 0));
       ctx.fillStyle = starGrad;
       ctx.fill();
     } else {
       // 柔和光晕球
       const orbGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, this.radius);
-      if (this.colorType === 'gold') {
-        orbGrad.addColorStop(0, `rgba(255, 245, 210, ${alpha * 1.4})`);
-        orbGrad.addColorStop(0.5, `rgba(255, 210, 130, ${alpha * 0.7})`);
-        orbGrad.addColorStop(1, 'rgba(255, 190, 80, 0)');
-      } else {
-        orbGrad.addColorStop(0, `rgba(255, 235, 245, ${alpha * 1.4})`);
-        orbGrad.addColorStop(0.5, `rgba(255, 190, 215, ${alpha * 0.7})`);
-        orbGrad.addColorStop(1, 'rgba(255, 170, 195, 0)');
-      }
+      orbGrad.addColorStop(0, effectRgba(effectPalette.light, alpha * 1.4));
+      orbGrad.addColorStop(0.5, effectRgba(sparkleColor, alpha * 0.7));
+      orbGrad.addColorStop(1, effectRgba(sparkleColor, 0));
       ctx.fillStyle = orbGrad;
       ctx.beginPath();
       ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
@@ -381,7 +405,7 @@ function render(currentTime) {
     // 绘制 4K 底图
     ctx.drawImage(bgImage, drawX, drawY, renderW, renderH);
 
-    // 顶部樱花微光漫射氛围
+    // 深色背景降低柔光叠加，保留原有星尘强度控制。
     if (config.sparkleIntensity > 0) {
       const glowPulse = 0.88 + Math.sin(elapsed * 1.1) * 0.12;
       const ambientGrad = ctx.createRadialGradient(
@@ -392,9 +416,9 @@ function render(currentTime) {
         screenHeight * 0.2 + parallaxY * 0.2,
         screenWidth * 0.95
       );
-      ambientGrad.addColorStop(0, `rgba(255, 235, 245, ${0.14 * config.sparkleIntensity * glowPulse})`);
-      ambientGrad.addColorStop(0.5, `rgba(255, 210, 230, ${0.07 * config.sparkleIntensity * glowPulse})`);
-      ambientGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ambientGrad.addColorStop(0, effectRgba(effectPalette.light, 0.14 * config.sparkleIntensity * glowPulse * ambientGlowScale));
+      ambientGrad.addColorStop(0.5, effectRgba(effectPalette.soft, 0.07 * config.sparkleIntensity * glowPulse * ambientGlowScale));
+      ambientGrad.addColorStop(1, effectRgba(effectPalette.base, 0));
 
       ctx.globalCompositeOperation = 'screen';
       ctx.fillStyle = ambientGrad;
@@ -442,6 +466,65 @@ requestAnimationFrame(render);
 const uiToggleBtn = document.getElementById('toggle-ui-btn');
 const controlPanel = document.getElementById('control-panel');
 const hintBar = document.getElementById('hint-bar');
+
+const effectColorInput = document.getElementById('param-effect-color');
+const resetEffectColorBtn = document.getElementById('btn-reset-effect-color');
+const effectThemeStatus = document.getElementById('effect-theme-status');
+const effectStorageKey = 'wallpaper:effect-color:v1:' + window.location.pathname;
+let manualEffectColor = null;
+let effectStorage = null;
+let effectStorageAvailable = true;
+
+try {
+  effectStorage = window.localStorage;
+  const savedColor = effectStorage.getItem(effectStorageKey);
+  if (isEffectColor(savedColor)) {
+    manualEffectColor = savedColor.toLowerCase();
+  } else if (savedColor !== null) {
+    console.warn('已忽略无效的手动特效颜色记录。');
+  }
+} catch (error) {
+  effectStorageAvailable = false;
+  console.warn('无法读取特效颜色记录，手动选择仅本次生效。', error);
+}
+
+function updateEffectColorControls() {
+  const color = manualEffectColor || automaticEffectTheme.primaryColor;
+  effectPalette = createEffectPalette(color);
+  effectColorInput.value = color;
+  resetEffectColorBtn.disabled = manualEffectColor === null;
+  effectThemeStatus.textContent = (manualEffectColor ? '手动配色' : '自动配色')
+    + (effectStorageAvailable ? '' : ' · 仅本次生效');
+}
+
+function persistEffectColor() {
+  if (!effectStorageAvailable) return;
+  try {
+    if (manualEffectColor) {
+      effectStorage.setItem(effectStorageKey, manualEffectColor);
+    } else {
+      effectStorage.removeItem(effectStorageKey);
+    }
+  } catch (error) {
+    effectStorageAvailable = false;
+    console.warn('无法保存特效颜色选择，此次调整仅本次生效。', error);
+  }
+}
+
+effectColorInput.addEventListener('input', () => {
+  if (!isEffectColor(effectColorInput.value)) return;
+  manualEffectColor = effectColorInput.value.toLowerCase();
+  persistEffectColor();
+  updateEffectColorControls();
+});
+
+resetEffectColorBtn.addEventListener('click', () => {
+  manualEffectColor = null;
+  persistEffectColor();
+  updateEffectColorControls();
+});
+
+updateEffectColorControls();
 
 uiToggleBtn.addEventListener('click', () => {
   controlPanel.classList.toggle('active');

@@ -14,6 +14,9 @@
 import os
 import sys
 import argparse
+import colorsys
+import json
+import re
 import subprocess
 import webbrowser
 from PIL import Image
@@ -35,6 +38,75 @@ TEMPLATE_DIR = os.path.join(CURRENT_DIR, "sample_sakura_wallpaper")
 
 DEFAULT_TARGET_W = 3840
 DEFAULT_TARGET_H = 2400
+DEFAULT_EFFECT_COLOR = "#b8d9f2"
+EFFECT_THEME_PATTERN = re.compile(
+    r'(<script id="effect-theme" type="application/json">)(.*?)(</script>)',
+    re.DOTALL,
+)
+
+def extract_effect_theme(img_pil):
+    """优先参考外圈环境色；颜色统计不等同于人物与背景分割。"""
+    sample = img_pil.convert("RGB")
+    sample.thumbnail((160, 160), Image.Resampling.LANCZOS)
+    width, height = sample.size
+    buckets = [[0.0, 0.0, 0.0, 0.0] for _ in range(24)]
+    total_weight = colored_weight = brightness_sum = 0.0
+    pixels = sample.load()
+
+    for index in range(width * height):
+        pixel = pixels[index % width, index // width]
+        x, y = index % width + 0.5, index // width + 0.5
+        outer = x < width * 0.25 or x >= width * 0.75 or y < height * 0.25 or y >= height * 0.75
+        weight = 3.0 if outer else 1.0
+        red, green, blue = (channel / 255.0 for channel in pixel)
+        brightness = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+        total_weight += weight
+        brightness_sum += brightness * weight
+        hue, saturation, _ = colorsys.rgb_to_hsv(red, green, blue)
+        if saturation < 0.15 or brightness <= 0.025 or brightness >= 0.95:
+            continue
+
+        # 极暗或近白细节降低贡献，避免少量噪点决定整张图的特效颜色。
+        color_weight = weight * min(1.0, brightness / 0.15, (1.0 - brightness) / 0.15)
+        colored_weight += color_weight
+        bucket = buckets[min(23, int(hue * 24))]
+        bucket[0] += color_weight
+        bucket[1] += red * color_weight
+        bucket[2] += green * color_weight
+        bucket[3] += blue * color_weight
+
+    primary_color = DEFAULT_EFFECT_COLOR
+    if colored_weight >= total_weight * 0.15:
+        weight, red, green, blue = max(buckets, key=lambda bucket: bucket[0])
+        hue, lightness, saturation = colorsys.rgb_to_hls(red / weight, green / weight, blue / weight)
+        color = colorsys.hls_to_rgb(hue, max(0.68, min(0.82, lightness)), max(0.25, min(0.65, saturation)))
+        primary_color = "#" + "".join(f"{round(channel * 255):02x}" for channel in color)
+
+    return {"primaryColor": primary_color, "brightness": round(brightness_sum / total_weight, 5)}
+
+def replace_effect_theme(content, theme):
+    """只替换唯一配色数据块，保留其余网页内容与换行风格。"""
+    if len(list(EFFECT_THEME_PATTERN.finditer(content))) != 1:
+        raise ValueError("index.html 必须包含唯一的 effect-theme 配色数据块，请先升级壁纸模板。")
+    newline = "\r\n" if "\r\n" in content else "\n"
+    payload = json.dumps(theme, ensure_ascii=False)
+    return EFFECT_THEME_PATTERN.sub(
+        lambda match: match.group(1) + newline + "    " + payload + newline + "  " + match.group(3),
+        content,
+        count=1,
+    )
+
+def refresh_effect_theme(project_dir):
+    """读取已有底图更新配色，不接入超分、打包或浏览器预览流程。"""
+    html_path = os.path.join(project_dir, "index.html")
+    with open(html_path, "r", encoding="utf-8", newline="") as rf:
+        content = rf.read()
+    with Image.open(os.path.join(project_dir, "bg.png")) as background:
+        theme = extract_effect_theme(background)
+    content = replace_effect_theme(content, theme)
+    with open(html_path, "w", encoding="utf-8", newline="") as wf:
+        wf.write(content)
+    print(f"已刷新自动特效配色：{html_path}（主色 {theme['primaryColor']}）")
 
 def fit_to_aspect_ratio(img_pil, target_aspect=1.6):
     """
@@ -122,6 +194,7 @@ def process_single_image(image_path, target_w=DEFAULT_TARGET_W, target_h=DEFAULT
 
     # 6. 自动组装交互式 Web 动态壁纸工程包
     print(f"  [Packaging] Assembling interactive Web Wallpaper bundle...")
+    effect_theme = extract_effect_theme(final_4k)
     for f in ["index.html", "wallpaper.js", "project.json", "README.md"]:
         src_template_file = os.path.join(TEMPLATE_DIR, f)
         dst_file = os.path.join(out_project_dir, f)
@@ -131,6 +204,8 @@ def process_single_image(image_path, target_w=DEFAULT_TARGET_W, target_h=DEFAULT
             # 替换工程标题
             content = content.replace("木之本樱 & 小可 - 4K 交互式动态壁纸", f"{base_name} - 4K 交互式动态壁纸")
             content = content.replace("木之本樱 - 4K 樱花飞舞 (Cardcaptor Sakura Interactive)", f"{base_name} 4K Wallpaper")
+            if f == "index.html":
+                content = replace_effect_theme(content, effect_theme)
             with open(dst_file, "w", encoding="utf-8") as wf:
                 wf.write(content)
 
@@ -153,7 +228,15 @@ def main():
     parser.add_argument("--no-tta", action="store_true", help="禁用 TTA 模式 (可略微加快速度，但建议保留以获得最佳线条抗锯齿)")
     parser.add_argument("--style", "-s", type=str, default="natural", choices=["natural", "film"], help="画风风格")
     parser.add_argument("--no-browser", action="store_true", help="处理完成后不自动打开浏览器预览")
+    parser.add_argument("--refresh-theme", type=str, metavar="工程目录", help="仅从工程内已有 bg.png 刷新 HTML 配色，不运行超分或预览")
     args = parser.parse_args()
+
+    if args.refresh_theme is not None:
+        try:
+            refresh_effect_theme(args.refresh_theme)
+        except (OSError, ValueError) as exc:
+            parser.exit(1, f"刷新配色失败：{exc}\n")
+        return
 
     # 确定输入图片列表
     images = []
